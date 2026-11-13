@@ -1,0 +1,7 @@
+# Chặn truy cập trực tiếp vào file cấu hình / thư viện
+<FilesMatch "^(config|config\.sample|lib)\.php$">
+  Require all denied
+</FilesMatch>
+<FilesMatch "\.(log|sql)$">
+  Require all denied
+</FilesMatch>
