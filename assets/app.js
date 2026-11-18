@@ -79,10 +79,14 @@ function range() {
   if (S.view === 'day') { const s = sod(c); return [s, addDays(s, 1)]; }
   return [sod(c), addDays(sod(c), 60)];
 }
+/* Tải 1 khoảng rộng (±62 ngày quanh phạm vi đang xem) và giữ trong bộ nhớ: chuyển tháng/tuần/ngày trong khoảng này hiện ngay, không chờ mạng. */
+let WIN = null, loadSeq = 0;
+const covered = () => { const [a, b] = range(); return !!WIN && a >= WIN[0] && b <= WIN[1]; };
 async function loadShoots() {
-  const [a, b] = range();
-  const r = await api('shoots_list', { query: { from: ymd(a) + ' 00:00', to: ymd(b) + ' 00:00' } });
-  S.shoots = r.shoots;
+  const [a, b] = range(), my = ++loadSeq, from = addDays(a, -62), to = addDays(b, 62);
+  const r = await api('shoots_list', { query: { from: ymd(from) + ' 00:00', to: ymd(to) + ' 00:00' } });
+  if (my !== loadSeq) return; // đã có yêu cầu mới hơn
+  S.shoots = r.shoots; WIN = [from, to];
 }
 async function loadStaff() { S.staff = (await api('staff_list')).staff; }
 async function refresh() {
@@ -566,7 +570,12 @@ function shift(n) {
   else S.cur = addDays(c, 30 * n);
   S.mini = new Date(S.cur);
 }
-async function goto() { S.tgScroll = S.tgScroll; await refresh(); }
+async function goto() {
+  render(); // vẽ ngay từ dữ liệu đã có trong bộ nhớ
+  if (covered()) return;
+  try { await loadShoots(); } catch (e) { toast(e.message, true); }
+  render();
+}
 function newAt(d) { openShootForm(null, d); }
 
 /* ============ Sự kiện ============ */
@@ -574,7 +583,10 @@ const H = {
   scrim: (t, ev) => { if (ev.target === t) closeModal(); },
   close: () => closeModal(),
   staffclose: () => { const cb = STAFF_CTX?.onDone; closeModal(); if (cb) cb(); },
-  nav: async t => { S.page = t.dataset.p; if (S.page === 'admin') { try { S.adminUsers = (await api('admin_users')).users; } catch (e) { toast(e.message, true); } } render(); },
+  nav: async t => {
+    // Đang ở trang Lịch (xem ngày/tuần/danh sách) mà bấm lại nút "Lịch" -> quay về xem Tháng
+    if (t.dataset.p === 'calendar' && S.page === 'calendar' && S.view !== 'month') { S.view = 'month'; S.tgScroll = null; goto(); return; }
+    S.page = t.dataset.p; if (S.page === 'admin') { try { S.adminUsers = (await api('admin_users')).users; } catch (e) { toast(e.message, true); } } render(); },
   authmode: t => { S.authMode = t.dataset.m; renderAuth(); },
   logout: async () => { await api('logout', { body: {} }); S.user = null; S.shoots = []; S.staff = []; S.page = 'calendar'; render(); },
   today: () => { S.cur = new Date(); S.mini = new Date(); S.tgScroll = null; goto(); },
