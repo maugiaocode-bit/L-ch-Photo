@@ -105,17 +105,31 @@ function status_label(string $s): string {
 }
 
 /* ============ Gửi email (SMTP thuần, fallback mail()) ============ */
-function send_mail(string $to, string $subject, string $html): bool {
+/** Làm sạch tên/email dùng trong header: bỏ xuống dòng để tránh chèn header. */
+function mail_clean(string $s): string { return trim(preg_replace('/[\r\n<>"]+/', ' ', $s)); }
+
+/** Địa chỉ trả lời = email của studio (chủ tài khoản), để thợ bấm "Trả lời" thì thư về đúng studio. */
+function owner_reply(array $owner): ?array {
+    $e = trim((string)($owner['email'] ?? ''));
+    if (!filter_var($e, FILTER_VALIDATE_EMAIL)) return null;
+    return ['email' => $e, 'name' => mail_clean(owner_label($owner))];
+}
+
+/**
+ * $reply: ['email'=>..., 'name'=>...] hoặc null. $fromName: tên hiển thị người gửi (vd tên studio); địa chỉ gửi vẫn là mail_from đã xác minh.
+ */
+function send_mail(string $to, string $subject, string $html, ?array $reply = null, ?string $fromName = null): bool {
     $from = (string)cfg('mail_from', 'no-reply@localhost');
-    $fromName = (string)cfg('mail_name', 'Lịch Chụp');
+    $fromName = mail_clean($fromName !== null && $fromName !== '' ? $fromName : (string)cfg('mail_name', 'Lịch Chụp'));
     try {
         if (cfg('mail_driver') === 'brevo') {
-            brevo_send($to, $subject, $html, $from, $fromName);
+            brevo_send($to, $subject, $html, $from, $fromName, $reply);
         } elseif (cfg('smtp_host')) {
-            smtp_send($to, $subject, $html, $from, $fromName);
+            smtp_send($to, $subject, $html, $from, $fromName, $reply);
         } else {
             $headers = "MIME-Version: 1.0\r\nContent-Type: text/html; charset=UTF-8\r\n"
-                . 'From: =?UTF-8?B?' . base64_encode($fromName) . "?= <$from>\r\n";
+                . 'From: =?UTF-8?B?' . base64_encode($fromName) . "?= <$from>\r\n"
+                . ($reply ? 'Reply-To: =?UTF-8?B?' . base64_encode($reply['name']) . "?= <{$reply['email']}>\r\n" : '');
             if (!mail($to, '=?UTF-8?B?' . base64_encode($subject) . '?=', $html, $headers)) {
                 throw new Exception('mail() failed');
             }
@@ -128,15 +142,17 @@ function send_mail(string $to, string $subject, string $html): bool {
 }
 
 /** Gửi qua API Brevo (HTTPS cổng 443) – dùng được trên host miễn phí chặn SMTP. */
-function brevo_send(string $to, string $subject, string $html, string $from, string $fromName): void {
+function brevo_send(string $to, string $subject, string $html, string $from, string $fromName, ?array $reply = null): void {
     $key = (string)cfg('brevo_api_key', '');
     if ($key === '') throw new Exception('Thiếu brevo_api_key');
-    $payload = json_encode([
+    $data = [
         'sender' => ['name' => $fromName, 'email' => $from],
         'to' => [['email' => $to]],
         'subject' => $subject,
         'htmlContent' => $html,
-    ], JSON_UNESCAPED_UNICODE);
+    ];
+    if ($reply) $data['replyTo'] = ['email' => $reply['email'], 'name' => $reply['name']];
+    $payload = json_encode($data, JSON_UNESCAPED_UNICODE);
     $ch = curl_init('https://api.brevo.com/v3/smtp/email');
     curl_setopt_array($ch, [
         CURLOPT_POST => true, CURLOPT_POSTFIELDS => $payload, CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 20,
@@ -150,7 +166,7 @@ function brevo_send(string $to, string $subject, string $html, string $from, str
     if ($code < 200 || $code >= 300) throw new Exception("Brevo HTTP $code: " . substr((string)$res, 0, 300));
 }
 
-function smtp_send(string $to, string $subject, string $html, string $from, string $fromName): void {
+function smtp_send(string $to, string $subject, string $html, string $from, string $fromName, ?array $reply = null): void {
     $secure = (string)cfg('smtp_secure', 'ssl');
     $host = (string)cfg('smtp_host');
     $port = (int)cfg('smtp_port', 465);
@@ -192,6 +208,7 @@ function smtp_send(string $to, string $subject, string $html, string $from, stri
 
     $msg = 'Date: ' . date('r') . "\r\n"
         . 'From: =?UTF-8?B?' . base64_encode($fromName) . "?= <$from>\r\n"
+        . ($reply ? 'Reply-To: =?UTF-8?B?' . base64_encode($reply['name']) . "?= <{$reply['email']}>\r\n" : '')
         . "To: <$to>\r\n"
         . 'Subject: =?UTF-8?B?' . base64_encode($subject) . "?=\r\n"
         . 'Message-ID: <' . bin2hex(random_bytes(8)) . "@$domain>\r\n"
@@ -257,7 +274,7 @@ function send_assignment_mail(array $shoot, array $a, string $kind): bool {
     if ($kind === 'cancel') {
         $subject = "[Hủy lịch] $date - " . $shoot['customer_name'];
         $body = "<p style=\"font-size:15px;line-height:1.5\">Chào $who, $by đã <b>hủy</b> ca chụp dưới đây:</p>" . mail_details($shoot, $a['role']);
-        return send_mail($a['email'], $subject, mail_layout('Ca chụp đã bị hủy', $body));
+        return send_mail($a['email'], $subject, mail_layout('Ca chụp đã bị hủy', $body), owner_reply($owner), owner_label($owner));
     }
     $upd = $kind === 'update';
     $subject = ($upd ? '[Cập nhật] ' : '[Lời mời] ') . "Lịch chụp $date - " . $shoot['customer_name'];
@@ -268,7 +285,7 @@ function send_assignment_mail(array $shoot, array $a, string $kind): bool {
     $body = "<p style=\"font-size:15px;line-height:1.5;margin:0 0 8px\">$intro</p>" . mail_details($shoot, $a['role'])
         . '<div>' . btn($url . '&a=accept', '✓ Đồng ý', '#34c759') . '&nbsp;&nbsp;' . btn($url . '&a=decline', '✕ Không nhận', '#ff453a') . '</div>'
         . '<p style="color:#8e8e93;font-size:12px;margin-top:18px">Hoặc mở liên kết: <a href="' . esc($url) . '" style="color:#0a84ff">' . esc($url) . '</a></p>';
-    return send_mail($a['email'], $subject, mail_layout($upd ? 'Ca chụp đã thay đổi' : 'Lời mời nhận ca chụp', $body));
+    return send_mail($a['email'], $subject, mail_layout($upd ? 'Ca chụp đã thay đổi' : 'Lời mời nhận ca chụp', $body), owner_reply($owner), owner_label($owner));
 }
 
 function send_reminder_mail(array $shoot, array $a, string $when): bool {
@@ -279,7 +296,8 @@ function send_reminder_mail(array $shoot, array $a, string $when): bool {
         $url = respond_url($a['token']);
         $body .= '<p style="font-size:14px">Bạn chưa phản hồi ca này:</p><div>' . btn($url . '&a=accept', '✓ Đồng ý', '#34c759') . '&nbsp;&nbsp;' . btn($url . '&a=decline', '✕ Không nhận', '#ff453a') . '</div>';
     }
-    return send_mail($a['email'], $subject, mail_layout($when === '24h' ? 'Nhắc lịch chụp ngày mai' : 'Sắp đến giờ chụp', $body));
+    $owner = get_owner((int)$shoot['user_id']);
+    return send_mail($a['email'], $subject, mail_layout($when === '24h' ? 'Nhắc lịch chụp ngày mai' : 'Sắp đến giờ chụp', $body), owner_reply($owner), owner_label($owner));
 }
 
 function shoot_team_html(int $shootId): string {

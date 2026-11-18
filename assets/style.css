@@ -4,7 +4,7 @@
   --glass:rgba(255,255,255,.58);--glass-strong:rgba(255,255,255,.82);--stroke:rgba(255,255,255,.85);
   --line:rgba(60,60,67,.12);--shadow:0 12px 40px rgba(70,90,150,.14);
   --r:26px;--r-sm:16px;
-  --font:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text",Inter,"Segoe UI",Roboto,system-ui,sans-serif;
+  --font:Roboto,"Google Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,system-ui,sans-serif;
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{height:100%}
@@ -304,6 +304,35 @@ table.tbl{width:100%;border-collapse:collapse;font-size:14px}
   .fab svg{width:24px;height:24px}
 }
 @keyframes up{from{transform:translateY(100%)}}
+
+/* ---------- Chữ gọn, nhẹ như Google Calendar + nền đồng màu ---------- */
+html{background:#e9f0ff}
+.topbar h2{font-weight:500;letter-spacing:-.2px}
+.cell .dn{font-weight:400}
+.mhead div{font-weight:500}
+.lunar.first{font-weight:500}
+.tg-head .dn{font-weight:400}
+@media (max-width:860px){
+  /* nền trên cùng 1 tông xanh nhạt (hết mảng hồng ở đỉnh), dưới pha nhẹ để vẫn mềm mại */
+  .bg{background:linear-gradient(180deg,#e6efff 0%,#eef1ff 45%,#f6f3fb 100%)}
+  .b1{opacity:.55;top:-180px}
+  .b2{top:auto;bottom:18%;right:-170px;opacity:.38}
+  .b3{opacity:.55}
+  .tb-row h2{font-size:21px;font-weight:500;letter-spacing:-.2px}
+  .viewsel{font-weight:500;font-size:14px}
+  .mp{font-size:14px;font-weight:400;padding:5px 13px}
+  .mp.on{font-weight:500}
+  .yr{font-weight:500;font-size:14px}
+  .mhead div{font-size:11.5px;font-weight:500;letter-spacing:.2px;color:#70757a}
+  .cell .dn{font-size:13px;font-weight:400;color:#3c4043;width:24px;height:24px}
+  .cell.sun .dn{color:var(--red)}
+  .cell.today .dn,.cell.today.sun .dn{color:#fff;font-weight:500}
+  .cell .lunar{font-size:8.5px;font-weight:400;color:#9aa0a6}
+  .cell .lunar.first{color:var(--orange);font-weight:500}
+  .chip{font-size:10px;font-weight:500}
+  .tabbar a{font-weight:500;font-size:10.5px}
+  .tg-head .dn{font-size:16px;font-weight:400}
+}
 
 /* ---------- Ảnh / video đính kèm ---------- */
 .media-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(86px,1fr));gap:8px;margin-bottom:8px}

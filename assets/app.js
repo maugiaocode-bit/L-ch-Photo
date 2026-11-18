@@ -170,7 +170,8 @@ function titleOf() {
   if (S.page !== 'calendar') return { t: { staff: 'Nhân sự', settings: 'Tài khoản', admin: 'Quản trị người dùng' }[S.page], s: '' };
   if (S.view === 'month') {
     const l = Lunar.solarToLunar(15, c.getMonth() + 1, c.getFullYear());
-    return { t: `Tháng ${c.getMonth() + 1}, ${c.getFullYear()}`, s: `Âm lịch: năm ${Lunar.yearName(l.y)}` };
+    // Chỉ ghi "Tháng 11" + "Âm lịch: tháng 10" (không ghi năm), cả điện thoại lẫn máy tính
+    return { t: `Tháng ${c.getMonth() + 1}`, s: `Âm lịch: tháng ${l.m}${l.leap ? ' nhuận' : ''}` };
   }
   if (S.view === 'week') {
     const a = isMobile() ? sod(c) : mondayOf(c), b = addDays(a, isMobile() ? 2 : 6);
