@@ -35,6 +35,60 @@ function now_str(): string { return date('Y-m-d H:i:s'); }
 function esc(?string $s): string { return htmlspecialchars((string)$s, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); }
 function base_url(): string { return rtrim((string)cfg('base_url', ''), '/'); }
 
+/* ============ Ảnh / video đính kèm ============ */
+const MEDIA_TYPES = ['image/jpeg' => 'jpg', 'image/png' => 'png', 'image/webp' => 'webp', 'image/gif' => 'gif',
+    'video/mp4' => 'mp4', 'video/quicktime' => 'mov', 'video/webm' => 'webm'];
+const MAX_MEDIA_PER_SHOOT = 20;
+
+/** Thư mục uploads/ nằm ngoài tầm truy cập trực tiếp (Require all denied); chỉ PHP đọc được. */
+function uploads_dir(): string {
+    $d = dirname(__DIR__) . '/uploads';
+    if (!is_dir($d)) @mkdir($d, 0755, true);
+    $ht = $d . '/.htaccess';
+    if (!is_file($ht)) @file_put_contents($ht, "Require all denied\n<IfModule !mod_authz_core.c>\nDeny from all\n</IfModule>\n");
+    return $d;
+}
+function ini_bytes(string $v): int {
+    $v = trim($v);
+    if ($v === '') return 0;
+    $n = (float)$v;
+    switch (strtolower(substr($v, -1))) { case 'g': $n *= 1024; case 'm': $n *= 1024; case 'k': $n *= 1024; }
+    return (int)$n;
+}
+function max_upload_bytes(): int {
+    $cfg = (int)cfg('max_upload_mb', 50) * 1048576;
+    $lim = array_filter([ini_bytes((string)ini_get('upload_max_filesize')), ini_bytes((string)ini_get('post_max_size'))]);
+    return $lim ? min($cfg, ...$lim) : $cfg;
+}
+function serve_media(array $m): void {
+    $path = uploads_dir() . '/' . $m['filename'];
+    if (!is_file($path)) { http_response_code(404); exit; }
+    $size = filesize($path); $start = 0; $end = $size - 1;
+    header('Content-Type: ' . $m['mime']);
+    header('Accept-Ranges: bytes');
+    header('X-Content-Type-Options: nosniff');
+    header('Cache-Control: private, max-age=86400');
+    header('Content-Disposition: inline; filename="' . rawurlencode((string)$m['orig_name']) . '"');
+    if (isset($_SERVER['HTTP_RANGE']) && preg_match('/bytes=(\d*)-(\d*)/', $_SERVER['HTTP_RANGE'], $r)) {
+        if ($r[1] === '' && $r[2] !== '') { $start = max(0, $size - (int)$r[2]); }
+        else { if ($r[1] !== '') $start = (int)$r[1]; if ($r[2] !== '') $end = min((int)$r[2], $size - 1); }
+        if ($start > $end || $start >= $size) { http_response_code(416); header("Content-Range: bytes */$size"); exit; }
+        http_response_code(206);
+        header("Content-Range: bytes $start-$end/$size");
+    }
+    header('Content-Length: ' . ($end - $start + 1));
+    $fp = fopen($path, 'rb'); fseek($fp, $start); $left = $end - $start + 1;
+    while ($left > 0 && !feof($fp)) { $chunk = fread($fp, min(8192, $left)); echo $chunk; $left -= strlen($chunk); }
+    fclose($fp);
+    exit;
+}
+function media_count(int $shootId): int {
+    return (int)q('SELECT COUNT(*) c FROM shoot_media WHERE shoot_id=?', [$shootId])->fetch()['c'];
+}
+function delete_media_files(array $rows): void {
+    foreach ($rows as $m) { $p = uploads_dir() . '/' . $m['filename']; if (is_file($p)) @unlink($p); }
+}
+
 /* ============ Định dạng tiếng Việt ============ */
 function vn_weekday(DateTime $d): string {
     return ['Chủ nhật', 'Thứ hai', 'Thứ ba', 'Thứ tư', 'Thứ năm', 'Thứ sáu', 'Thứ bảy'][(int)$d->format('w')];
@@ -55,7 +109,9 @@ function send_mail(string $to, string $subject, string $html): bool {
     $from = (string)cfg('mail_from', 'no-reply@localhost');
     $fromName = (string)cfg('mail_name', 'Lịch Chụp');
     try {
-        if (cfg('smtp_host')) {
+        if (cfg('mail_driver') === 'brevo') {
+            brevo_send($to, $subject, $html, $from, $fromName);
+        } elseif (cfg('smtp_host')) {
             smtp_send($to, $subject, $html, $from, $fromName);
         } else {
             $headers = "MIME-Version: 1.0\r\nContent-Type: text/html; charset=UTF-8\r\n"
@@ -69,6 +125,29 @@ function send_mail(string $to, string $subject, string $html): bool {
         error_log('[mail] ' . $to . ' : ' . $e->getMessage());
         return false;
     }
+}
+
+/** Gửi qua API Brevo (HTTPS cổng 443) – dùng được trên host miễn phí chặn SMTP. */
+function brevo_send(string $to, string $subject, string $html, string $from, string $fromName): void {
+    $key = (string)cfg('brevo_api_key', '');
+    if ($key === '') throw new Exception('Thiếu brevo_api_key');
+    $payload = json_encode([
+        'sender' => ['name' => $fromName, 'email' => $from],
+        'to' => [['email' => $to]],
+        'subject' => $subject,
+        'htmlContent' => $html,
+    ], JSON_UNESCAPED_UNICODE);
+    $ch = curl_init('https://api.brevo.com/v3/smtp/email');
+    curl_setopt_array($ch, [
+        CURLOPT_POST => true, CURLOPT_POSTFIELDS => $payload, CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 20,
+        CURLOPT_HTTPHEADER => ['accept: application/json', 'content-type: application/json', 'api-key: ' . $key],
+    ]);
+    $res = curl_exec($ch);
+    $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $err = curl_error($ch);
+    curl_close($ch);
+    if ($res === false) throw new Exception('Brevo: ' . $err);
+    if ($code < 200 || $code >= 300) throw new Exception("Brevo HTTP $code: " . substr((string)$res, 0, 300));
 }
 
 function smtp_send(string $to, string $subject, string $html, string $from, string $fromName): void {
@@ -144,6 +223,7 @@ function mail_details(array $shoot, ?string $role = null): string {
     ];
     if ($role) $rows[] = ['Vai trò của bạn', role_label($role)];
     if (!empty($shoot['notes'])) $rows[] = ['Ghi chú', $shoot['notes']];
+    if (!empty($shoot['id']) && ($n = media_count((int)$shoot['id'])) > 0) $rows[] = ['Ảnh/video khách gửi', $n . ' tệp – mở liên kết bên dưới để xem'];
     $h = '<table style="width:100%;border-collapse:collapse;margin:6px 0 18px">';
     foreach ($rows as [$k, $v]) {
         if ($v === '' || $v === null) continue;

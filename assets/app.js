@@ -32,7 +32,7 @@ const ICON = {
 };
 
 /* ============ Trạng thái ============ */
-const S = { ready: false, user: null, csrf: '', canRegister: true, authMode: 'login', page: 'calendar', view: 'month', cur: new Date(), mini: new Date(), staff: [], shoots: [], tgScroll: null, error: '', adminUsers: [] };
+const S = { maxUploadMb: 20, maxMedia: 20, ready: false, user: null, csrf: '', canRegister: true, authMode: 'login', page: 'calendar', view: 'month', cur: new Date(), mini: new Date(), staff: [], shoots: [], tgScroll: null, error: '', adminUsers: [] };
 const app = $('#app');
 
 async function api(route, { body, query, method } = {}) {
@@ -44,7 +44,15 @@ async function api(route, { body, query, method } = {}) {
       headers: { 'Content-Type': 'application/json', 'X-CSRF': S.csrf },
       body: body ? JSON.stringify(body) : undefined,
     });
-    data = await res.json();
+    const txt = await res.text();
+    // Host miễn phí đôi khi trả trang kiểm tra bot (HTML) thay vì JSON khi cookie đã hết hạn -> tải lại 1 lần để được cấp cookie mới
+    if (txt.includes('/aes.js') && !sessionStorage.getItem('botcheck')) {
+      sessionStorage.setItem('botcheck', '1');
+      location.replace(location.pathname + '?t=' + Date.now());
+      return new Promise(() => {});
+    }
+    data = JSON.parse(txt);
+    sessionStorage.removeItem('botcheck');
   } catch (e) {
     throw new Error('Không kết nối được máy chủ (api/index.php). Hãy kiểm tra PHP và cấu hình database.');
   }
@@ -87,6 +95,14 @@ function shootStatus(s) {
   if (s.staff.every(x => x.status === 'accepted')) return 'ok';
   return 'pending';
 }
+/* Màu theo thợ chụp: mỗi thợ 1 màu (chọn ở trang Nhân sự). Ca chưa có thợ chụp = màu xám. */
+const PALETTE = ['#0a84ff', '#ff453a', '#30c25a', '#ff9f0a', '#af52de', '#ff375f', '#00b8b0', '#8e6b3f', '#5856d6', '#ff6b00'];
+const staffColor = (id, c) => c || PALETTE[(Math.max(+id, 1) - 1) % PALETTE.length];
+function shootColor(s) {
+  const p = s.staff.filter(x => x.role === 'photographer').sort((a, b) => a.ss_id - b.ss_id)[0];
+  return p ? staffColor(p.staff_id, p.color) : '#8e8e93';
+}
+const statusDot = s => { const st = shootStatus(s); return st === 'declined' ? '<i class="sd bad" title="Có người từ chối"></i>' : st === 'pending' ? '<i class="sd wait" title="Chờ phản hồi"></i>' : ''; };
 const statusText = { none: 'Chưa gán nhân sự', ok: 'Đã xác nhận đủ', pending: 'Chờ phản hồi', declined: 'Có người từ chối' };
 
 /* ============ Render chính ============ */
@@ -115,6 +131,7 @@ function sidebar() {
     <div class="brand"><div class="logo">${ICON.cam}</div><span>${E(S.appName)}</span></div>
     <button class="btn primary block" data-act="new">${ICON.plus.replace('<svg', '<svg width="18" height="18"')} Thêm lịch chụp</button>
     ${miniCal()}
+    ${legendHTML()}
     <nav class="nav">
       <a data-act="nav" data-p="calendar" class="${S.page === 'calendar' ? 'on' : ''}">${ICON.cal}Lịch chụp</a>
       <a data-act="nav" data-p="staff" class="${S.page === 'staff' ? 'on' : ''}">${ICON.users}Nhân sự</a>
@@ -126,6 +143,12 @@ function sidebar() {
       <div class="t"><b>${E(u.studio_name || u.name)}</b><small>${E(u.email)}</small></div>
       <button class="iconbtn" data-act="logout" title="Đăng xuất">${ICON.out}</button></div>
   </aside>`;
+}
+
+function legendHTML() {
+  const ph = S.staff.filter(x => x.roles.split(',').includes('photographer'));
+  if (!ph.length) return '';
+  return `<div class="legend"><div class="lbl" style="padding:0 2px 6px">Màu theo thợ chụp</div>${ph.map(x => `<div class="lg"><span class="cdot" style="background:${staffColor(x.id, x.color)}"></span>${E(x.name)}</div>`).join('')}<div class="lg"><span class="cdot" style="background:#8e8e93"></span>Chưa gán thợ chụp</div></div>`;
 }
 
 function miniCal() {
@@ -203,7 +226,7 @@ function byDay() {
   Object.values(m).forEach(a => a.sort((x, y) => x.start_at.localeCompare(y.start_at)));
   return m;
 }
-const chip = s => `<div class="chip st-${shootStatus(s)}" data-act="open" data-id="${s.id}" title="${E(s.customer_name)}"><b>${s.start_at.slice(11, 16)}</b>${E(s.customer_name || s.title)}</div>`;
+const chip = s => `<div class="chip pc" style="--c:${shootColor(s)}" data-act="open" data-id="${s.id}" title="${s.start_at.slice(11, 16)} · ${E(s.customer_name)}${s.location ? ' · ' + E(s.location) : ''}">${E(s.location || s.customer_name || s.title)}${statusDot(s)}</div>`;
 
 function monthHTML() {
   const c = S.cur, s = mondayOf(new Date(c.getFullYear(), c.getMonth(), 1)), days = byDay(), today = ymd(new Date());
@@ -244,7 +267,7 @@ function gridHTML(days) {
     const evs = layout((all[k] || []).map(s => { const a = parseDT(s.start_at), b = parseDT(s.end_at); return { sh: s, s: a.getHours() * 60 + a.getMinutes(), e: Math.max(a.getHours() * 60 + a.getMinutes() + 30, sod(b) > sod(a) ? 1440 : b.getHours() * 60 + b.getMinutes()) }; }));
     const html = evs.map(x => {
       const top = x.s * HH / 60, h = Math.max((x.e - x.s) * HH / 60, 24);
-      return `<div class="ev st-${shootStatus(x.sh)}" data-act="open" data-id="${x.sh.id}" style="top:${top}px;height:${h}px;left:calc(${x.lane / x.lanes * 100}% + 2px);width:calc(${100 / x.lanes}% - 4px)"><b>${E(x.sh.customer_name || x.sh.title)}</b><small>${x.sh.start_at.slice(11, 16)}–${x.sh.end_at.slice(11, 16)}${x.sh.location ? ' · ' + E(x.sh.location) : ''}</small></div>`;
+      return `<div class="ev pc" data-act="open" data-id="${x.sh.id}" style="--c:${shootColor(x.sh)};top:${top}px;height:${h}px;left:calc(${x.lane / x.lanes * 100}% + 2px);width:calc(${100 / x.lanes}% - 4px)"><b>${E(x.sh.customer_name || x.sh.title)}</b><small>${x.sh.start_at.slice(11, 16)}–${x.sh.end_at.slice(11, 16)}${x.sh.location ? ' · ' + E(x.sh.location) : ''}</small></div>`;
     }).join('');
     const now = new Date(), nl = k === ymd(now) ? `<div class="nowline" style="top:${(now.getHours() * 60 + now.getMinutes()) * HH / 60}px"></div>` : '';
     return `<div class="tg-col" data-act="slot" data-date="${k}">${lines}${html}${nl}</div>`;
@@ -260,7 +283,7 @@ function agendaHTML() {
   return `<div class="ag">${keys.map(k => {
     const d = parseDT(k + ' 00:00'), h = Lunar.holiday(d);
     return `<h4>${WDF[d.getDay()]}, ${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear()} <span>· Âm ${Lunar.label(d)}${Lunar.solarToLunar(d.getDate(), d.getMonth() + 1, d.getFullYear()).d === 1 ? '' : '/' + Lunar.solarToLunar(d.getDate(), d.getMonth() + 1, d.getFullYear()).m}</span>${h ? `<em>${E(h)}</em>` : ''}</h4>` +
-      all[k].map(s => `<div class="ag-item st-${shootStatus(s)}" data-act="open" data-id="${s.id}"><div class="tm">${s.start_at.slice(11, 16)}<small>${s.end_at.slice(11, 16)}</small></div><div class="bd"><b>${E(s.customer_name)}</b><span>${E(s.location || 'Chưa có địa điểm')} · ${s.staff.length} nhân sự · ${statusText[shootStatus(s)]}</span></div></div>`).join('');
+      all[k].map(s => `<div class="ag-item pc" style="--c:${shootColor(s)}" data-act="open" data-id="${s.id}"><div class="tm">${s.start_at.slice(11, 16)}<small>${s.end_at.slice(11, 16)}</small></div><div class="bd"><b>${E(s.customer_name)}</b><span>${E(s.location || 'Chưa có địa điểm')} · ${s.staff.length} nhân sự · ${statusText[shootStatus(s)]}</span></div></div>`).join('');
   }).join('')}</div>`;
 }
 
@@ -271,7 +294,7 @@ function openModal(html, { wide, onMount } = {}) {
   if (onMount) onMount(root);
 }
 function closeModal() { $('#modal-root').innerHTML = ''; }
-document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') { const lb = document.querySelector('.lb'); if (lb) lb.remove(); else closeModal(); } });
 
 /* ============ Chi tiết ca chụp ============ */
 function openDetail(id) {
@@ -289,13 +312,15 @@ function openDetail(id) {
       ${s.location ? `<dt>Địa điểm</dt><dd><a target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(s.location)}">${E(s.location)}</a></dd>` : ''}
       ${s.notes ? `<dt>Ghi chú</dt><dd>${E(s.notes).replace(/\n/g, '<br>')}</dd>` : ''}
     </dl>
-    <div class="lbl" style="margin-bottom:6px">Đội ngũ</div>
+    ${(s.media || []).length ? `<div class="lbl" style="margin-bottom:6px">Ảnh / video khách gửi (${s.media.length})</div><div class="media-grid" style="margin-bottom:14px">${s.media.map(m => { const v = m.mime.startsWith('video/'); return `<div class="mthumb" data-act="lightbox" data-id="${m.id}" data-v="${v ? 1 : 0}">${v ? `<video src="${mediaUrl(m.id)}#t=0.1" preload="metadata" muted playsinline></video><span class="play">▶</span>` : `<img src="${mediaUrl(m.id)}" alt="" loading="lazy">`}</div>`; }).join('')}</div>` : ''}
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px"><div class="lbl">Đội ngũ</div><button class="btn small" data-act="edit" data-id="${s.id}">+ Thêm thợ</button></div>
     <div class="rolelist">${team.length ? team.map(t => `<div class="roleitem"><span class="tag r-${t.role}">${ROLES[t.role]}</span>
-      <div class="n"><b>${E(t.name)}</b><small>${E(t.email)}${t.phone ? ' · ' + E(t.phone) : ''}</small></div>
+      <div class="n"><b>${t.role === 'photographer' ? `<span class="cdot" style="background:${staffColor(t.staff_id, t.color)}"></span>` : ''}${E(t.name)}</b><small>${E(t.email)}${t.phone ? ' · ' + E(t.phone) : ''}</small></div>
       <div class="acts"><span class="pill ${t.status}">${STATUS[t.status]}</span>
       ${t.status !== 'accepted' ? `<button class="btn small" data-act="setst" data-id="${t.ss_id}" data-st="accepted" title="Đánh dấu đã đồng ý (xác nhận qua điện thoại)">✓</button>` : ''}
       ${t.status !== 'declined' ? `<button class="btn small" data-act="setst" data-id="${t.ss_id}" data-st="declined" title="Đánh dấu từ chối">✕</button>` : ''}
-      <button class="btn small" data-act="resend" data-id="${t.ss_id}">Gửi lại mail</button></div></div>`).join('') : '<div class="roleitem"><span style="color:var(--ink3)">Chưa gán nhân sự</span></div>'}</div>
+      <button class="btn small" data-act="resend" data-id="${t.ss_id}">Gửi lại mail</button>
+      <button class="btn small danger" data-act="unassign" data-sid="${s.id}" data-id="${t.ss_id}" title="Gỡ khỏi ca này">Gỡ</button></div></div>`).join('') : '<div class="roleitem"><span style="color:var(--ink3)">Chưa gán nhân sự</span></div>'}</div>
     <div class="sh-foot" style="justify-content:space-between"><button class="btn danger" data-act="del" data-id="${s.id}">Xóa</button><button class="btn primary" data-act="edit" data-id="${s.id}">Chỉnh sửa</button></div>
   </div>`);
 }
@@ -311,6 +336,7 @@ function openShootForm(shoot, presetDate, draft) {
     id: shoot ? shoot.id : null, title: shoot ? shoot.title : '', customer_name: shoot ? shoot.customer_name : '', customer_phone: shoot ? shoot.customer_phone : '',
     location: shoot ? shoot.location : '', notes: shoot ? shoot.notes || '' : '', date: ymd(st0), start: hm(st0), end: hm(en0), sel,
     orig: shoot ? shoot.staff.map(a => a.staff_id + '|' + a.role) : [],
+    media: shoot ? [...(shoot.media || [])] : [], files: [], removed: [],
   };
   const F = FORM;
   const group = role => {
@@ -334,6 +360,11 @@ function openShootForm(shoot, presetDate, draft) {
     <button type="button" class="btn small" data-act="staffnew" style="margin-bottom:12px">+ Thêm nhân sự mới</button>
     <div id="conf"></div>
     <div class="fld"><label>Ghi chú</label><textarea class="inp" id="f-notes" placeholder="Trang phục, concept, yêu cầu của khách…">${E(F.notes)}</textarea></div>
+    <div class="fld"><label>Ảnh / video tham khảo (các góc khách muốn chụp)</label>
+      <div class="media-grid" id="media-grid">${mediaGridHTML()}</div>
+      <input type="file" id="f-files" accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/quicktime,video/webm" multiple hidden>
+      <div><button type="button" class="btn small" data-act="addmedia">📎 Thêm ảnh / video</button></div>
+      <p class="hint" style="margin:6px 4px 0">Tối đa ${S.maxMedia} tệp · mỗi tệp ≤ ${S.maxUploadMb}MB. Ảnh được tự nén. Thợ được mời sẽ xem được trong trang xác nhận.</p></div>
     <div class="info" id="sendnote"></div>
     <div class="sh-foot"><button type="button" class="btn" data-act="close">Hủy</button><button class="btn primary" id="f-save">${F.id ? 'Lưu thay đổi' : 'Lưu & gửi lời mời'}</button></div>
   </form>`, {
@@ -344,10 +375,59 @@ function openShootForm(shoot, presetDate, draft) {
       $('#f-start').addEventListener('change', e => { const [h, m] = e.target.value.split(':').map(Number); if (isNaN(h)) return; const t = h * 60 + m + dur; $('#f-end').value = `${pad(Math.floor(t / 60) % 24)}:${pad(t % 60)}`; upd(); });
       $('#f-end').addEventListener('change', () => { const [a, b] = $('#f-start').value.split(':').map(Number), [c, d] = $('#f-end').value.split(':').map(Number); if (!isNaN(a + c)) dur = (c * 60 + d) - (a * 60 + b); upd(); });
       $('#f-date').addEventListener('change', upd);
+      $('#f-files').addEventListener('change', e => { addFiles([...e.target.files]); e.target.value = ''; });
       upd(); updateSendNote();
     },
   });
 }
+/* ---- Ảnh / video đính kèm ---- */
+const mediaUrl = id => `api/index.php?r=media&id=${id}`;
+const MEDIA_OK = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'video/mp4', 'video/quicktime', 'video/webm'];
+function mediaGridHTML() {
+  const old = FORM.media.filter(m => !FORM.removed.includes(+m.id)).map(m => {
+    const v = m.mime.startsWith('video/');
+    return `<div class="mthumb">${v ? `<video src="${mediaUrl(m.id)}#t=0.1" preload="metadata" muted playsinline></video><span class="play">▶</span>` : `<img src="${mediaUrl(m.id)}" alt="">`}<button type="button" class="mx" data-act="rmmedia" data-id="${m.id}" title="Xóa">✕</button></div>`;
+  });
+  const fresh = FORM.files.map((f, i) => `<div class="mthumb">${f.video ? `<video src="${f.url}#t=0.1" preload="metadata" muted playsinline></video><span class="play">▶</span>` : `<img src="${f.url}" alt="">`}<button type="button" class="mx" data-act="rmnew" data-i="${i}" title="Bỏ">✕</button></div>`);
+  return old.concat(fresh).join('');
+}
+const refreshMedia = () => { const g = $('#media-grid'); if (g) g.innerHTML = mediaGridHTML(); };
+async function compressImage(f) {
+  try {
+    const bmp = await createImageBitmap(f), sc = Math.min(1, 1600 / Math.max(bmp.width, bmp.height));
+    if (sc === 1 && f.size < 1.5e6) { bmp.close?.(); return f; }
+    const c = document.createElement('canvas'); c.width = Math.round(bmp.width * sc); c.height = Math.round(bmp.height * sc);
+    c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height); bmp.close?.();
+    const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', .85));
+    if (!blob || (sc === 1 && blob.size >= f.size)) return f;
+    return new File([blob], f.name.replace(/\.\w+$/, '') + '.jpg', { type: 'image/jpeg' });
+  } catch (e) { return f; }
+}
+async function addFiles(list) {
+  const maxB = S.maxUploadMb * 1048576;
+  for (const f of list) {
+    if (FORM.media.length - FORM.removed.length + FORM.files.length >= S.maxMedia) { toast(`Tối đa ${S.maxMedia} tệp cho mỗi ca`, true); break; }
+    const file = f.type.startsWith('image/') && f.type !== 'image/gif' ? await compressImage(f) : f;
+    if (!MEDIA_OK.includes(file.type)) { toast(`${f.name}: định dạng chưa hỗ trợ (dùng JPG/PNG/WebP, MP4/MOV/WebM)`, true); continue; }
+    if (file.size > maxB) { toast(`${f.name} quá lớn (tối đa ${S.maxUploadMb}MB)`, true); continue; }
+    FORM.files.push({ file, url: URL.createObjectURL(file), video: file.type.startsWith('video/'), name: f.name });
+    refreshMedia();
+  }
+}
+async function uploadMedia(shootId, file) {
+  const fd = new FormData(); fd.append('file', file, file.name);
+  let res, d;
+  try { res = await fetch('api/index.php?r=media_upload&shoot_id=' + shootId, { method: 'POST', credentials: 'same-origin', headers: { 'X-CSRF': S.csrf }, body: fd }); d = await res.json(); }
+  catch (e) { throw new Error('Máy chủ từ chối tệp (có thể quá lớn)'); }
+  if (!res.ok) throw new Error(d.error || 'Tải lên thất bại');
+}
+function openLightbox(id, isVideo) {
+  document.querySelector('.lb')?.remove();
+  const d = document.createElement('div'); d.className = 'lb'; d.dataset.act = 'lbclose';
+  d.innerHTML = (isVideo ? `<video src="${mediaUrl(id)}" controls autoplay playsinline></video>` : `<img src="${mediaUrl(id)}" alt="">`) + '<button class="lbx" data-act="lbclose">✕</button>';
+  document.body.appendChild(d);
+}
+
 function collectForm() {
   Object.assign(FORM, { customer_name: $('#f-cust').value, customer_phone: $('#f-phone').value, title: $('#f-title').value, date: $('#f-date').value, start: $('#f-start').value, end: $('#f-end').value, location: $('#f-loc').value, notes: $('#f-notes').value });
   return FORM;
@@ -380,10 +460,24 @@ async function saveShoot() {
   btn.disabled = true; err.innerHTML = '';
   try {
     const r = await api('shoot_save', { body: { id: F.id, title: F.title, customer_name: F.customer_name, customer_phone: F.customer_phone, location: F.location, notes: F.notes, start_at: `${F.date} ${F.start}`, end_at: `${F.date} ${F.end}`, staff } });
+    F.id = r.id; // từ đây là sửa, tránh tạo trùng nếu phải thử lại tải tệp
+    for (const id of F.removed.splice(0)) { await api('media_delete', { body: { id } }).catch(() => {}); F.media = F.media.filter(m => +m.id !== +id); }
+    const errs = [], total = F.files.length;
+    for (let i = 0; i < total; i++) {
+      btn.textContent = `Đang tải lên ${i + 1}/${total}…`;
+      const f = F.files[0];
+      try { await uploadMedia(F.id, f.file); URL.revokeObjectURL(f.url); F.files.shift(); }
+      catch (e) { errs.push(`${f.name}: ${e.message}`); break; }
+    }
+    if (errs.length) {
+      refreshMedia(); btn.textContent = 'Thử lại tải tệp'; btn.disabled = false;
+      err.innerHTML = `<div class="err">Đã lưu ca chụp nhưng tải ảnh/video chưa xong.<br>${errs.map(E).join('<br>')}</div>`;
+      await loadShoots(); return;
+    }
     closeModal();
     S.cur = new Date(F.date + 'T00:00'); S.mini = new Date(S.cur);
     await refresh();
-    toast(r.failed ? `Đã lưu. Gửi được ${r.sent} email, ${r.failed} email lỗi (kiểm tra cấu hình SMTP).` : r.sent ? `Đã lưu và gửi ${r.sent} email` : 'Đã lưu lịch chụp', !!r.failed);
+    toast(r.failed ? `Đã lưu. Gửi được ${r.sent} email, ${r.failed} email lỗi (kiểm tra cấu hình email).` : r.sent ? `Đã lưu và gửi ${r.sent} email` : 'Đã lưu lịch chụp', !!r.failed);
   } catch (e) { err.innerHTML = `<div class="err">${E(e.message)}</div>`; btn.disabled = false; }
 }
 
@@ -392,28 +486,31 @@ function staffPage() {
   const list = S.staff;
   return `<div class="page"><p class="hint" style="margin:0 0 4px">Lưu sẵn thợ chụp, thợ phụ, makeup để chọn nhanh khi tạo lịch. Hệ thống sẽ gửi email mời đến địa chỉ bên dưới.</p>
     <button class="btn primary" data-act="staffadd">+ Thêm nhân sự</button>
-    ${list.length ? `<div class="cards">${list.map(x => `<div class="card"><div class="top"><div class="avatar" style="background:linear-gradient(145deg,#7cc0ff,#7c8cff)">${E(x.name.charAt(0).toUpperCase())}</div><div style="min-width:0"><h4>${E(x.name)}</h4><small>${E(x.email)}</small></div></div>
+    ${list.length ? `<div class="cards">${list.map(x => `<div class="card"><div class="top"><div class="avatar" style="background:${staffColor(x.id, x.color)}">${E(x.name.charAt(0).toUpperCase())}</div><div style="min-width:0"><h4>${E(x.name)}</h4><small>${E(x.email)}</small></div></div>
       <div class="row">${x.roles.split(',').map(r => `<span class="tag r-${r}">${ROLES[r]}</span>`).join('')}</div>
       ${x.phone ? `<small>📞 ${E(x.phone)}</small>` : ''}${x.note ? `<small>${E(x.note)}</small>` : ''}
       <div class="row" style="margin-top:4px"><button class="btn small" data-act="staffedit" data-id="${x.id}">Sửa</button><button class="btn small danger" data-act="staffdel" data-id="${x.id}">Xóa</button></div></div>`).join('')}</div>` : '<div class="empty">Chưa có nhân sự nào.</div>'}</div>`;
 }
 function openStaffForm(x, onDone) {
   const roles = x ? x.roles.split(',') : ['photographer'];
+  const used = S.staff.map(s => staffColor(s.id, s.color));
+  const color = x ? staffColor(x.id, x.color) : (PALETTE.find(c => !used.includes(c)) || PALETTE[S.staff.length % PALETTE.length]);
   openModal(`<div class="sh-head"><h3>${x ? 'Sửa nhân sự' : 'Thêm nhân sự'}</h3><button class="iconbtn" data-act="staffclose">✕</button></div>
   <form class="sh-body" data-form="staff" autocomplete="off"><div id="ferr"></div>
     <div class="fld"><label>Họ tên *</label><input class="inp" id="s-name" value="${E(x?.name)}" required></div>
     <div class="fld"><label>Email nhận lịch (Gmail) *</label><input class="inp" id="s-email" type="email" value="${E(x?.email)}" required placeholder="ten@gmail.com"></div>
     <div class="fld"><label>Số điện thoại</label><input class="inp" id="s-phone" type="tel" value="${E(x?.phone)}"></div>
     <div class="fld"><label>Vai trò (chọn nhiều được)</label><div class="chips" id="s-roles">${Object.entries(ROLES).map(([k, l]) => `<button type="button" class="pick ${roles.includes(k) ? 'on' : ''}" data-act="rolepick" data-role="${k}">${l}</button>`).join('')}</div></div>
+    <div class="fld"><label>Màu hiển thị trên lịch (ca của thợ chụp này sẽ có màu này)</label><div class="swatches" id="s-colors">${PALETTE.map(c => `<button type="button" class="sw ${c === color ? 'on' : ''}" style="background:${c}" data-act="colorpick" data-c="${c}" aria-label="${c}"></button>`).join('')}</div></div>
     <div class="fld"><label>Ghi chú</label><input class="inp" id="s-note" value="${E(x?.note)}" placeholder="VD: chuyên chụp cưới, có xe riêng…"></div>
     <div class="sh-foot"><button type="button" class="btn" data-act="staffclose">Hủy</button><button class="btn primary">Lưu</button></div></form>`);
-  STAFF_CTX = { id: x?.id, onDone };
+  STAFF_CTX = { id: x?.id, onDone, color };
 }
 let STAFF_CTX = null;
 async function saveStaff() {
   const roles = [...document.querySelectorAll('#s-roles .pick.on')].map(b => b.dataset.role);
   try {
-    await api('staff_save', { body: { id: STAFF_CTX.id, name: $('#s-name').value, email: $('#s-email').value, phone: $('#s-phone').value, note: $('#s-note').value, roles } });
+    await api('staff_save', { body: { id: STAFF_CTX.id, name: $('#s-name').value, email: $('#s-email').value, phone: $('#s-phone').value, note: $('#s-note').value, roles, color: STAFF_CTX.color } });
     await loadStaff(); const cb = STAFF_CTX.onDone; closeModal(); toast('Đã lưu nhân sự');
     if (cb) cb(); else render();
   } catch (e) { $('#ferr').innerHTML = `<div class="err">${E(e.message)}</div>`; }
@@ -506,6 +603,16 @@ const H = {
     if (!confirm('Xóa ca chụp này? Những người đã được mời (chưa từ chối) sẽ nhận email báo hủy.')) return;
     try { await api('shoot_delete', { body: { id: +t.dataset.id } }); closeModal(); await refresh(); toast('Đã xóa'); } catch (e) { toast(e.message, true); }
   },
+  unassign: async t => {
+    const s = S.shoots.find(x => x.id == t.dataset.sid); if (!s) return;
+    const who = s.staff.find(x => x.ss_id == t.dataset.id);
+    if (!confirm(`Gỡ ${who?.name || 'người này'} khỏi ca chụp? Họ sẽ nhận email báo hủy.`)) return;
+    try {
+      const staff = s.staff.filter(x => x.ss_id != t.dataset.id).map(x => ({ staff_id: +x.staff_id, role: x.role }));
+      await api('shoot_save', { body: { id: s.id, title: s.title, customer_name: s.customer_name, customer_phone: s.customer_phone, location: s.location, notes: s.notes || '', start_at: s.start_at.slice(0, 16), end_at: s.end_at.slice(0, 16), staff } });
+      await loadShoots(); render(); openDetail(s.id); toast('Đã gỡ khỏi ca');
+    } catch (e) { toast(e.message, true); }
+  },
   resend: async t => { try { const r = await api('assignment_resend', { body: { id: +t.dataset.id } }); toast(r.sent ? 'Đã gửi lại email' : 'Gửi email thất bại – kiểm tra SMTP', !r.sent); } catch (e) { toast(e.message, true); } },
   setst: async t => { try { await api('assignment_status', { body: { id: +t.dataset.id, status: t.dataset.st } }); await loadShoots(); const id = S.shoots.find(s => s.staff.some(x => x.ss_id == t.dataset.id))?.id; render(); if (id) openDetail(id); } catch (e) { toast(e.message, true); } },
   pick: t => {
@@ -513,6 +620,12 @@ const H = {
     set.has(id) ? set.delete(id) : set.add(id); t.classList.toggle('on'); updateSendNote(); scheduleConflicts();
   },
   rolepick: t => t.classList.toggle('on'),
+  colorpick: t => { STAFF_CTX.color = t.dataset.c; document.querySelectorAll('#s-colors .sw').forEach(b => b.classList.toggle('on', b === t)); },
+  addmedia: () => $('#f-files').click(),
+  rmmedia: t => { FORM.removed.push(+t.dataset.id); refreshMedia(); },
+  rmnew: t => { const f = FORM.files.splice(+t.dataset.i, 1)[0]; if (f) URL.revokeObjectURL(f.url); refreshMedia(); },
+  lightbox: t => openLightbox(t.dataset.id, t.dataset.v === '1'),
+  lbclose: (t, ev) => { if (t.classList.contains('lb') && ev.target !== t) return; document.querySelector('.lb')?.remove(); },
   staffnew: () => { const d = collectForm(); openStaffForm(null, () => openShootForm(null, null, d)); },
   staffadd: () => openStaffForm(null),
   staffedit: t => openStaffForm(S.staff.find(x => x.id == t.dataset.id)),
@@ -555,7 +668,7 @@ window.addEventListener('resize', (() => { let w = innerWidth <= 860, t; return 
   render();
   try {
     const r = await api('me');
-    S.csrf = r.csrf; S.user = r.user; S.appName = r.app_name || 'Lịch Chụp'; S.canRegister = r.can_register; S.ready = true;
+    S.csrf = r.csrf; S.user = r.user; S.maxUploadMb = r.max_upload_mb || 20; S.maxMedia = r.max_media || 20; S.appName = r.app_name || 'Lịch Chụp'; S.canRegister = r.can_register; S.ready = true;
     if (S.appName) document.title = S.appName + ' – Quản lý lịch trình nhiếp ảnh';
     if (S.user) await refresh(); else render();
   } catch (e) { S.error = e.message; render(); }

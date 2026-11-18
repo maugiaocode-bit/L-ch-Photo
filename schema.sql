@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS staff (
   phone VARCHAR(40) NOT NULL DEFAULT '',
   roles VARCHAR(100) NOT NULL DEFAULT 'photographer',
   note VARCHAR(255) NOT NULL DEFAULT '',
+  color VARCHAR(9) NOT NULL DEFAULT '',
   created_at DATETIME NOT NULL,
   KEY idx_staff_user (user_id),
   CONSTRAINT fk_staff_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -47,6 +48,19 @@ CREATE TABLE IF NOT EXISTS shoots (
   CONSTRAINT fk_shoot_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS shoot_media (
+  id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  shoot_id INT UNSIGNED NOT NULL,
+  user_id INT UNSIGNED NOT NULL,
+  filename VARCHAR(60) NOT NULL,
+  orig_name VARCHAR(255) NOT NULL DEFAULT '',
+  mime VARCHAR(100) NOT NULL,
+  size INT UNSIGNED NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL,
+  KEY idx_media_shoot (shoot_id),
+  CONSTRAINT fk_media_shoot FOREIGN KEY (shoot_id) REFERENCES shoots(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS shoot_staff (
   id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   shoot_id INT UNSIGNED NOT NULL,
@@ -63,3 +77,6 @@ CREATE TABLE IF NOT EXISTS shoot_staff (
   CONSTRAINT fk_ss_shoot FOREIGN KEY (shoot_id) REFERENCES shoots(id) ON DELETE CASCADE,
   CONSTRAINT fk_ss_staff FOREIGN KEY (staff_id) REFERENCES staff(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- NÂNG CẤP database cũ (đã import bản trước): chạy riêng dòng dưới 1 lần
+-- ALTER TABLE staff ADD COLUMN color VARCHAR(9) NOT NULL DEFAULT '';

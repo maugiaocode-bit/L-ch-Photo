@@ -3,3 +3,5 @@ api/config.php
 .DS_Store
 Thumbs.db
 node_modules/
+uploads/*
+!uploads/.htaccess

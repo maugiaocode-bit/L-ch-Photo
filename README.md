@@ -33,7 +33,10 @@ git push -u origin main
 ## 2. Cài trên Hostinger
 
 1. **Database:** hPanel → Databases → MySQL Databases → tạo database + user. Mở phpMyAdmin → Import file `schema.sql`.
-2. **Hộp thư gửi email:** hPanel → Emails → tạo `no-reply@tenmiencuaban.com`. SMTP: `smtp.hostinger.com`, cổng 465, SSL.
+2. **Gửi email** (xem 3 cách trong `api/config.sample.php`):
+   - *Gmail của bạn:* bật xác minh 2 bước → tạo **Mật khẩu ứng dụng** tại myaccount.google.com/apppasswords → điền `smtp.gmail.com`, cổng 587, `tls`, `mail_from` = địa chỉ Gmail.
+   - *Hộp thư tên miền:* hPanel → Emails → tạo `no-reply@tenmiencuaban.com`, SMTP `smtp.hostinger.com`, cổng 465, SSL.
+   - *Host miễn phí chặn SMTP:* dùng API Brevo (`mail_driver` = `brevo`).
 3. **Đưa code lên** (chọn 1 cách):
    - *Cách A – Git của Hostinger:* hPanel → Advanced → Git → nhập URL repo, nhánh `main`, thư mục `public_html` → Create → bấm Deploy (bật Auto deployment nếu muốn). Repo Private thì thêm Deploy key mà hPanel cung cấp vào GitHub (Settings → Deploy keys).
    - *Cách B – GitHub Actions + FTP:* tạo secrets `FTP_SERVER`, `FTP_USERNAME`, `FTP_PASSWORD`, `FTP_DIR` (vd `/public_html/`) trong GitHub → mỗi lần push tự upload (`.github/workflows/deploy.yml`).

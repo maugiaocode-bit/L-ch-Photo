@@ -76,11 +76,13 @@ function load_shoots(int $uid, string $from, string $to): array {
     if (!$shoots) return [];
     $ids = array_column($shoots, 'id');
     $in = implode(',', array_fill(0, count($ids), '?'));
-    $rows = q("SELECT ss.id ss_id, ss.shoot_id, ss.staff_id, ss.role, ss.status, ss.responded_at, s.name, s.email, s.phone
+    $rows = q("SELECT ss.id ss_id, ss.shoot_id, ss.staff_id, ss.role, ss.status, ss.responded_at, s.name, s.email, s.phone, s.color
                FROM shoot_staff ss JOIN staff s ON s.id=ss.staff_id WHERE ss.shoot_id IN ($in)", $ids)->fetchAll();
     $by = [];
     foreach ($rows as $r) { $by[$r['shoot_id']][] = $r; }
-    foreach ($shoots as &$s) { $s['staff'] = $by[$s['id']] ?? []; }
+    $med = [];
+    foreach (q("SELECT id, shoot_id, mime, orig_name, size FROM shoot_media WHERE shoot_id IN ($in) ORDER BY id", $ids)->fetchAll() as $m) { $med[$m['shoot_id']][] = $m; }
+    foreach ($shoots as &$s) { $s['staff'] = $by[$s['id']] ?? []; $s['media'] = $med[$s['id']] ?? []; }
     return $shoots;
 }
 
@@ -101,6 +103,7 @@ try {
         case 'me': {
             $u = me();
             out(['user' => $u ? user_public($u) : null, 'csrf' => $_SESSION['csrf'], 'app_name' => cfg('app_name', 'Lịch Chụp'),
+                 'max_upload_mb' => (int)floor(max_upload_bytes() / 1048576), 'max_media' => MAX_MEDIA_PER_SHOOT,
                  'can_register' => (bool)cfg('allow_register', true) || (int)q('SELECT COUNT(*) c FROM users')->fetch()['c'] === 0]);
         }
         case 'register': {
@@ -154,7 +157,7 @@ try {
         /* ---------- Nhân sự ---------- */
         case 'staff_list': {
             $u = need_user();
-            out(['staff' => q('SELECT id,name,email,phone,roles,note FROM staff WHERE user_id=? ORDER BY name', [$u['id']])->fetchAll()]);
+            out(['staff' => q('SELECT id,name,email,phone,roles,note,color FROM staff WHERE user_id=? ORDER BY name', [$u['id']])->fetchAll()]);
         }
         case 'staff_save': {
             $u = need_user(); need_active($u); $b = body();
@@ -163,12 +166,13 @@ try {
             $email = valid_email((string)($b['email'] ?? ''));
             $roles = array_values(array_intersect(ROLES, (array)($b['roles'] ?? [])));
             if (!$roles) throw new ApiError('Chọn ít nhất 1 vai trò');
-            $vals = [$name, $email, str($b['phone'] ?? '', 40), implode(',', $roles), str($b['note'] ?? '', 255)];
+            $color = preg_match('/^#[0-9a-fA-F]{6}$/', (string)($b['color'] ?? '')) ? strtolower($b['color']) : '';
+            $vals = [$name, $email, str($b['phone'] ?? '', 40), implode(',', $roles), str($b['note'] ?? '', 255), $color];
             if (!empty($b['id'])) {
-                $st = q('UPDATE staff SET name=?,email=?,phone=?,roles=?,note=? WHERE id=? AND user_id=?', array_merge($vals, [(int)$b['id'], $u['id']]));
+                q('UPDATE staff SET name=?,email=?,phone=?,roles=?,note=?,color=? WHERE id=? AND user_id=?', array_merge($vals, [(int)$b['id'], $u['id']]));
                 $id = (int)$b['id'];
             } else {
-                q('INSERT INTO staff (name,email,phone,roles,note,user_id,created_at) VALUES (?,?,?,?,?,?,?)', array_merge($vals, [$u['id'], now_str()]));
+                q('INSERT INTO staff (name,email,phone,roles,note,color,user_id,created_at) VALUES (?,?,?,?,?,?,?,?)', array_merge($vals, [$u['id'], now_str()]));
                 $id = (int)db()->lastInsertId();
             }
             out(['id' => $id]);
@@ -270,8 +274,43 @@ try {
             $shoot = q('SELECT * FROM shoots WHERE id=? AND user_id=?', [$id, $u['id']])->fetch();
             if (!$shoot) throw new ApiError('Không tìm thấy ca chụp', 404);
             $as = q('SELECT ss.*, s.name, s.email FROM shoot_staff ss JOIN staff s ON s.id=ss.staff_id WHERE ss.shoot_id=? AND ss.status<>"declined"', [$id])->fetchAll();
+            $files = q('SELECT filename FROM shoot_media WHERE shoot_id=?', [$id])->fetchAll();
             q('DELETE FROM shoots WHERE id=?', [$id]);
+            delete_media_files($files);
             foreach ($as as $a) send_assignment_mail($shoot, $a, 'cancel');
+            out(['ok' => true]);
+        }
+
+        /* ---------- Ảnh / video đính kèm ---------- */
+        case 'media': { // xem tệp (chỉ chủ studio đang đăng nhập)
+            $u = need_user();
+            $m = q('SELECT * FROM shoot_media WHERE id=? AND user_id=?', [(int)($_GET['id'] ?? 0), $u['id']])->fetch();
+            if (!$m) throw new ApiError('Không tìm thấy', 404);
+            session_write_close();
+            serve_media($m);
+        }
+        case 'media_upload': {
+            $u = need_user(); need_active($u);
+            $sid = (int)($_GET['shoot_id'] ?? 0);
+            if (!q('SELECT id FROM shoots WHERE id=? AND user_id=?', [$sid, $u['id']])->fetch()) throw new ApiError('Không tìm thấy ca chụp', 404);
+            if (empty($_FILES['file'])) throw new ApiError('Không nhận được tệp – có thể vượt giới hạn dung lượng của máy chủ (' . (int)floor(max_upload_bytes() / 1048576) . 'MB)');
+            $f = $_FILES['file'];
+            if ($f['error'] === UPLOAD_ERR_INI_SIZE || $f['error'] === UPLOAD_ERR_FORM_SIZE || $f['size'] > max_upload_bytes())
+                throw new ApiError('Tệp quá lớn (tối đa ' . (int)floor(max_upload_bytes() / 1048576) . 'MB)');
+            if ($f['error'] !== UPLOAD_ERR_OK) throw new ApiError('Tải lên thất bại, hãy thử lại');
+            if (media_count($sid) >= MAX_MEDIA_PER_SHOOT) throw new ApiError('Tối đa ' . MAX_MEDIA_PER_SHOOT . ' ảnh/video cho mỗi ca');
+            $mime = (new finfo(FILEINFO_MIME_TYPE))->file($f['tmp_name']);
+            if (!isset(MEDIA_TYPES[$mime])) throw new ApiError('Chỉ nhận ảnh (JPG, PNG, WebP, GIF) hoặc video (MP4, MOV, WebM)');
+            $name = bin2hex(random_bytes(16)) . '.' . MEDIA_TYPES[$mime];
+            if (!move_uploaded_file($f['tmp_name'], uploads_dir() . '/' . $name)) throw new ApiError('Máy chủ không lưu được tệp (kiểm tra quyền thư mục uploads/)');
+            q('INSERT INTO shoot_media (shoot_id,user_id,filename,orig_name,mime,size,created_at) VALUES (?,?,?,?,?,?,?)',
+              [$sid, $u['id'], $name, mb_substr(basename((string)$f['name']), 0, 200), $mime, (int)$f['size'], now_str()]);
+            out(['id' => (int)db()->lastInsertId(), 'mime' => $mime]);
+        }
+        case 'media_delete': {
+            $u = need_user(); need_active($u); $b = body();
+            $m = q('SELECT * FROM shoot_media WHERE id=? AND user_id=?', [(int)($b['id'] ?? 0), $u['id']])->fetch();
+            if ($m) { q('DELETE FROM shoot_media WHERE id=?', [$m['id']]); delete_media_files([$m]); }
             out(['ok' => true]);
         }
         case 'assignment_resend': {
